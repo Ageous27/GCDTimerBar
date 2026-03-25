@@ -1,0 +1,8 @@
+## Interface: 11200
+## Title: GCDTimerBar
+## Notes: Movable GCD timer bar with options and combat visibility controls.
+## Author: Codex
+## Version: 1.0.0
+## SavedVariables: GCDTimerBarDB
+
+GCDTimerBar.lua
