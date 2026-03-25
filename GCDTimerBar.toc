@@ -2,7 +2,7 @@
 ## Title: GCDTimerBar
 ## Notes: Movable GCD timer bar with options and combat visibility controls.
 ## Author: Codex
-## Version: 1.1.0
+## Version: 1.1.1
 ## SavedVariables: GCDTimerBarDB
 
 GCDTimerBar.lua
