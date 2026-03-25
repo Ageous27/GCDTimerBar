@@ -1,4 +1,8 @@
+-- ============================================================================
+-- Persistent defaults and runtime state
+-- ============================================================================
 local defaults = {
+    -- Visual + behavior defaults persisted in SavedVariables.
     locked = false,
     hideOutOfCombat = false,
     showQueueOverlay = true,
@@ -14,6 +18,7 @@ local defaults = {
 }
 
 local state = {
+    -- Runtime-only state (not persisted).
     inCombat = false,
     gcdDuration = nil,
     gcdEnd = nil,
@@ -27,12 +32,17 @@ local state = {
     spellQueued = false,
 }
 
+-- Top-level UI objects created once and reused.
 local eventFrame = CreateFrame("Frame", "GCDTimerBar_EventFrame", UIParent)
 local bar = CreateFrame("Frame", "GCDTimerBar_BarFrame", UIParent)
 local options = nil
 local controls = {}
 
+-- ============================================================================
+-- Utility helpers
+-- ============================================================================
 local function Modulo(a, b)
+    -- WoW 1.12 compatibility: prefer math.mod fallback when math.fmod is unavailable.
     if type(math.fmod) == "function" then
         return math.fmod(a, b)
     end
@@ -53,13 +63,18 @@ local function IsPreviewActive()
 end
 
 local function EndActiveGCD()
+    -- Clears active-cast state after the bar reaches zero or when invalidated.
     state.gcdDuration = nil
     state.gcdEnd = nil
     state.spellQueued = false
 end
 
+-- ============================================================================
+-- Press-early window backend selection and sampling
+-- ============================================================================
 local function HasNampowerQueueSupport()
     local windowCvar
+    -- #3 backend requires both SuperWoW + Nampower and its queue-window CVar.
     if not SUPERWOW_VERSION then
         return false
     end
@@ -77,6 +92,7 @@ local function HasNampowerQueueSupport()
 end
 
 local function UpdatePressWindowFromNampower(now)
+    -- Reads Nampower queue settings and converts ms -> seconds for overlay width.
     local queueEnabled, queueWindowMs
     if (now - state.lastQueueSettingsSample) < 0.30 then
         return
@@ -96,12 +112,13 @@ local function UpdatePressWindowFromNampower(now)
     if queueWindowMs < 0 then
         queueWindowMs = 0
     end
-    -- Queue window is the true server-side early-press window when Nampower queueing is active.
-    -- Clamp to practical bounds for GCD visuals in 1.12.
+    -- Queue window is the true server-side early-press window in this mode.
+    -- Clamp to practical bounds for the GCD overlay.
     state.pressWindowSec = Clamp(queueWindowMs / 1000, 0.02, 0.90)
 end
 
 local function UpdatePressWindowFromLatency(now)
+    -- Fallback path: estimate safe early-press window from ping + jitter margin.
     local _, _, latencyMs
     local diff, windowMs
 
@@ -124,6 +141,7 @@ local function UpdatePressWindowFromLatency(now)
         state.latencyAvgMs = latencyMs
         state.latencyJitterMs = 0
     else
+        -- EWMA smoothing for stable latency + jitter fallback window.
         diff = math.abs(latencyMs - state.latencyAvgMs)
         state.latencyAvgMs = (state.latencyAvgMs * 0.80) + (latencyMs * 0.20)
         state.latencyJitterMs = (state.latencyJitterMs * 0.80) + (diff * 0.20)
@@ -134,6 +152,7 @@ local function UpdatePressWindowFromLatency(now)
 end
 
 local function UpdatePressWindow(now)
+    -- #3 when dependencies are present; otherwise #2 adaptive fallback.
     if state.hasQueueDeps then
         UpdatePressWindowFromNampower(now)
     else
@@ -141,9 +160,13 @@ local function UpdatePressWindow(now)
     end
 end
 
+-- ============================================================================
+-- Overlay drawing (purple early-press area)
+-- ============================================================================
 local function UpdateQueueOverlay(referenceDuration)
     local ratio, width
 
+    -- User hard toggle.
     if not GCDTimerBarDB.showQueueOverlay then
         bar.queueOverlay:Hide()
         return
@@ -162,6 +185,7 @@ local function UpdateQueueOverlay(referenceDuration)
     end
 
     bar.queueOverlay:SetWidth(width)
+    -- Slightly brighten when Nampower reports a spell currently queued.
     if state.spellQueued then
         bar.queueOverlay:SetVertexColor(0.72, 0.35, 0.95, 0.95)
     else
@@ -170,6 +194,9 @@ local function UpdateQueueOverlay(referenceDuration)
     bar.queueOverlay:Show()
 end
 
+-- ============================================================================
+-- SavedVariables normalization and migrations
+-- ============================================================================
 local function EnsureDB()
     if type(GCDTimerBarDB) ~= "table" then
         GCDTimerBarDB = {}
@@ -190,7 +217,7 @@ local function EnsureDB()
         GCDTimerBarDB.moved = defaults.moved
     end
 
-    -- One-time migration from the old default anchor (0, -180) to center.
+    -- One-time migration from an older default anchor.
     if not GCDTimerBarDB.moved and GCDTimerBarDB.x == 0 and GCDTimerBarDB.y == -180 then
         GCDTimerBarDB.x = 0
         GCDTimerBarDB.y = 0
@@ -205,6 +232,7 @@ local function EnsureDB()
 end
 
 local function SetBarFillRatio(ratio, forceSpark)
+    -- Core visual update: width maps linearly to remaining GCD time.
     local w
     if ratio < 0 then ratio = 0 end
     if ratio > 1 then ratio = 1 end
@@ -229,6 +257,7 @@ local function SetBarFillRatio(ratio, forceSpark)
 end
 
 local function UpdateBarVisuals()
+    -- Applies size/color/alpha options and refreshes current overlay sizing.
     bar:SetWidth(GCDTimerBarDB.width)
     bar:SetHeight(GCDTimerBarDB.height)
     bar.fill:SetHeight(GCDTimerBarDB.height)
@@ -240,6 +269,7 @@ local function UpdateBarVisuals()
 end
 
 local function SaveBarPosition()
+    -- Stores bar offset relative to UIParent center for resolution independence.
     local cx, cy = bar:GetCenter()
     local ux, uy = UIParent:GetCenter()
     if not cx or not cy or not ux or not uy then
@@ -256,6 +286,7 @@ local function UpdateBarPosition()
 end
 
 local function UpdateBarInteraction()
+    -- Locked mode: non-interactable and lower strata to avoid stealing clicks.
     if GCDTimerBarDB.locked then
         bar:SetFrameStrata("MEDIUM")
         bar:EnableMouse(false)
@@ -266,6 +297,10 @@ local function UpdateBarInteraction()
 end
 
 local function UpdateBarVisibility()
+    -- Visibility priority:
+    -- 1) options preview always visible
+    -- 2) hide-ooc hides when out of combat
+    -- 3) otherwise only show while GCD is active
     if IsPreviewActive() then
         bar:Show()
         return
@@ -288,6 +323,7 @@ local function UpdateBarVisibility()
 end
 
 local function BeginGCD(startTime, duration)
+    -- Starts a fresh bar cycle from 100% fill.
     if not startTime or not duration or duration <= 0 then
         return
     end
@@ -298,7 +334,11 @@ local function BeginGCD(startTime, duration)
     UpdateBarVisibility()
 end
 
+-- ============================================================================
+-- GCD source detection
+-- ============================================================================
 local function ConsiderCooldownCandidate(startTime, duration, now, best)
+    -- Filters to plausible GCD cooldowns and keeps the soonest-ending candidate.
     local ending
     if not startTime or not duration then return best end
     if duration < 0.75 or duration > 2.0 then return best end
@@ -322,6 +362,7 @@ local function FindGCDCandidate()
     local best = nil
     local slot
 
+    -- First try action slots (cheap and usually sufficient).
     for slot = 1, 120 do
         local startTime, duration, enabled = GetActionCooldown(slot)
         if enabled == 1 then
@@ -337,6 +378,7 @@ local function FindGCDCandidate()
         return nil, nil, nil
     end
 
+    -- Fallback: scan spellbook for a GCD-sized cooldown.
     local tabs = GetNumSpellTabs()
     local tab = 1
     while tab <= tabs do
@@ -362,6 +404,7 @@ local function FindGCDCandidate()
 end
 
 local function RefreshGCDFromCooldowns()
+    -- Pulls latest cooldown snapshot and updates bar if a new GCD is detected.
     local startTime, duration, ending = FindGCDCandidate()
     local now = GetTime()
 
@@ -381,6 +424,9 @@ local function RefreshGCDFromCooldowns()
     BeginGCD(startTime, duration)
 end
 
+-- ============================================================================
+-- Frame/UI construction helpers
+-- ============================================================================
 local function CreateBar()
     bar:SetClampedToScreen(true)
     bar:SetMovable(true)
@@ -407,6 +453,7 @@ local function CreateBar()
     bar.fill:SetPoint("BOTTOMLEFT", bar, "BOTTOMLEFT", 0, 0)
     bar.fill:SetWidth(defaults.width)
 
+    -- Purple left-edge "press early" window overlay.
     bar.queueOverlay = bar:CreateTexture(nil, "OVERLAY")
     bar.queueOverlay:SetTexture("Interface\\TargetingFrame\\UI-StatusBar")
     -- Left-edge zone: bar drains right->left, so this marks the "safe to queue now" segment.
@@ -456,6 +503,7 @@ local function CreateSlider(parent, name, label, minVal, maxVal, step, x, y, val
 end
 
 local function SetEditBoxEnabled(editBox, enabled)
+    -- 1.12-safe control enabling for EditBox (Enable/Disable methods are not guaranteed).
     if not editBox then return end
 
     if enabled then
@@ -479,6 +527,7 @@ local function SetEditBoxEnabled(editBox, enabled)
 end
 
 local function SyncOptionsFromDB()
+    -- One-way sync: DB/CVar -> controls (called on open, close-focus, and init).
     local queueWindowMs
     if not options then return end
     controls.lock:SetChecked(GCDTimerBarDB.locked and 1 or nil)
@@ -502,6 +551,7 @@ local function SyncOptionsFromDB()
                 controls.queueWindowLabel:SetTextColor(1, 1, 1)
             end
         else
+            -- Nampower missing: keep control visible but disabled/greyed as requested.
             controls.queueWindowInput:SetText("N/A")
             SetEditBoxEnabled(controls.queueWindowInput, false)
             controls.queueWindowInput:SetTextColor(0.55, 0.55, 0.55)
@@ -542,6 +592,7 @@ local function OpenColorPicker()
 end
 
 local function CreateOptions()
+    -- Builds and wires the /gcd options panel once at login.
     options = CreateFrame("Frame", "GCDTimerBar_OptionsFrame", UIParent)
     options:SetWidth(330)
     options:SetHeight(340)
@@ -636,6 +687,7 @@ local function CreateOptions()
         end
         value = math.floor(value + 0.5)
         value = Clamp(value, 50, 1200)
+        -- Persist directly to Nampower's CVar when available.
         SetCVar("NP_SpellQueueWindowMs", tostring(value))
         state.lastQueueSettingsSample = 0
         UpdatePressWindowFromNampower(GetTime())
@@ -724,6 +776,7 @@ local function CreateOptions()
 end
 
 local function ApplyAllSettings()
+    -- Centralized "repaint + behavior" pass used after init and option changes.
     UpdateBarVisuals()
     UpdateBarPosition()
     UpdateBarInteraction()
@@ -742,6 +795,9 @@ local function ToggleOptionsWindow()
     end
 end
 
+-- ============================================================================
+-- Runtime loop and event dispatcher
+-- ============================================================================
 bar:SetScript("OnUpdate", function()
     local now, remaining, ratio, phase
 
@@ -749,6 +805,7 @@ bar:SetScript("OnUpdate", function()
     UpdatePressWindow(now)
 
     if IsPreviewActive() then
+        -- Options preview mode: simulated looping GCD regardless of combat state.
         phase = Modulo(now, state.previewDuration)
         remaining = state.previewDuration - phase
         ratio = remaining / state.previewDuration
@@ -793,6 +850,11 @@ bar:SetScript("OnUpdate", function()
 end)
 
 eventFrame:SetScript("OnEvent", function()
+    -- Event-driven flow:
+    -- - login/build and dependency detection
+    -- - combat state toggles
+    -- - cooldown changes trigger GCD refresh
+    -- - optional Nampower queue events tune overlay brightness
     if event == "PLAYER_LOGIN" then
         EnsureDB()
         state.hasQueueDeps = HasNampowerQueueSupport()
@@ -801,6 +863,7 @@ eventFrame:SetScript("OnEvent", function()
         state.inCombat = UnitAffectingCombat("player") and true or false
         state.spellQueued = false
         if state.hasQueueDeps then
+            -- Nampower event for exact queue state transitions.
             eventFrame:RegisterEvent("SPELL_QUEUE_EVENT")
         end
         ApplyAllSettings()
@@ -819,6 +882,7 @@ eventFrame:SetScript("OnEvent", function()
         end
     elseif event == "SPELL_QUEUE_EVENT" then
         local eventCode = arg1
+        -- Queue codes from Nampower: queued(0/2/4), popped(1/3/5).
         if eventCode == 0 or eventCode == 2 or eventCode == 4 then
             state.spellQueued = true
         elseif eventCode == 1 or eventCode == 3 or eventCode == 5 then
@@ -827,6 +891,9 @@ eventFrame:SetScript("OnEvent", function()
     end
 end)
 
+-- ============================================================================
+-- Slash command + event registration
+-- ============================================================================
 SLASH_GCDTIMERBAR1 = "/gcd"
 SlashCmdList["GCDTIMERBAR"] = function()
     if GCDTimerBarDB == nil then
