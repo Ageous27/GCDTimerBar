@@ -95,7 +95,9 @@ local function UpdatePressWindowFromNampower(now)
     if queueWindowMs < 0 then
         queueWindowMs = 0
     end
-    state.pressWindowSec = Clamp(queueWindowMs / 1000, 0, 1.20)
+    -- Queue window is the true server-side early-press window when Nampower queueing is active.
+    -- Clamp to practical bounds for GCD visuals in 1.12.
+    state.pressWindowSec = Clamp(queueWindowMs / 1000, 0.02, 0.90)
 end
 
 local function UpdatePressWindowFromLatency(now)
@@ -146,7 +148,7 @@ local function UpdateQueueOverlay(referenceDuration)
         return
     end
 
-    ratio = Clamp(state.pressWindowSec / referenceDuration, 0, 1)
+    ratio = Clamp(state.pressWindowSec / referenceDuration, 0, 0.95)
     width = math.floor((GCDTimerBarDB.width * ratio) + 0.5)
     if width < 1 then
         bar.queueOverlay:Hide()
@@ -400,8 +402,9 @@ local function CreateBar()
 
     bar.queueOverlay = bar:CreateTexture(nil, "OVERLAY")
     bar.queueOverlay:SetTexture("Interface\\TargetingFrame\\UI-StatusBar")
-    bar.queueOverlay:SetPoint("TOPRIGHT", bar, "TOPRIGHT", 0, 0)
-    bar.queueOverlay:SetPoint("BOTTOMRIGHT", bar, "BOTTOMRIGHT", 0, 0)
+    -- Left-edge zone: bar drains right->left, so this marks the "safe to queue now" segment.
+    bar.queueOverlay:SetPoint("TOPLEFT", bar, "TOPLEFT", 0, 0)
+    bar.queueOverlay:SetPoint("BOTTOMLEFT", bar, "BOTTOMLEFT", 0, 0)
     bar.queueOverlay:SetWidth(0)
     bar.queueOverlay:SetVertexColor(0.60, 0.25, 0.88, 0.75)
     bar.queueOverlay:Hide()
