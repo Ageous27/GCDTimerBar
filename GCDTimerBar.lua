@@ -1,6 +1,7 @@
 local defaults = {
     locked = false,
     hideOutOfCombat = false,
+    showQueueOverlay = true,
     width = 220,
     height = 18,
     alpha = 1.0,
@@ -143,6 +144,11 @@ end
 local function UpdateQueueOverlay(referenceDuration)
     local ratio, width
 
+    if not GCDTimerBarDB.showQueueOverlay then
+        bar.queueOverlay:Hide()
+        return
+    end
+
     if not referenceDuration or referenceDuration <= 0 or state.pressWindowSec <= 0 then
         bar.queueOverlay:Hide()
         return
@@ -171,6 +177,7 @@ local function EnsureDB()
 
     if GCDTimerBarDB.locked == nil then GCDTimerBarDB.locked = defaults.locked end
     if GCDTimerBarDB.hideOutOfCombat == nil then GCDTimerBarDB.hideOutOfCombat = defaults.hideOutOfCombat end
+    if GCDTimerBarDB.showQueueOverlay == nil then GCDTimerBarDB.showQueueOverlay = defaults.showQueueOverlay end
     if type(GCDTimerBarDB.width) ~= "number" then GCDTimerBarDB.width = defaults.width end
     if type(GCDTimerBarDB.height) ~= "number" then GCDTimerBarDB.height = defaults.height end
     if type(GCDTimerBarDB.alpha) ~= "number" then GCDTimerBarDB.alpha = defaults.alpha end
@@ -449,13 +456,37 @@ local function CreateSlider(parent, name, label, minVal, maxVal, step, x, y, val
 end
 
 local function SyncOptionsFromDB()
+    local queueWindowMs
     if not options then return end
     controls.lock:SetChecked(GCDTimerBarDB.locked and 1 or nil)
     controls.hideOOC:SetChecked(GCDTimerBarDB.hideOutOfCombat and 1 or nil)
+    controls.showQueueOverlay:SetChecked(GCDTimerBarDB.showQueueOverlay and 1 or nil)
     controls.width:SetValue(GCDTimerBarDB.width)
     controls.height:SetValue(GCDTimerBarDB.height)
     controls.opacity:SetValue(GCDTimerBarDB.alpha)
     controls.colorSwatch:SetVertexColor(GCDTimerBarDB.r, GCDTimerBarDB.g, GCDTimerBarDB.b, 1)
+
+    if controls.queueWindowInput then
+        if state.hasQueueDeps then
+            queueWindowMs = tonumber(GetCVar("NP_SpellQueueWindowMs") or "")
+            if not queueWindowMs then
+                queueWindowMs = 400
+            end
+            controls.queueWindowInput:Enable()
+            controls.queueWindowInput:SetText(tostring(math.floor(queueWindowMs + 0.5)))
+            controls.queueWindowInput:SetTextColor(1, 1, 1)
+            if controls.queueWindowLabel then
+                controls.queueWindowLabel:SetTextColor(1, 1, 1)
+            end
+        else
+            controls.queueWindowInput:SetText("N/A")
+            controls.queueWindowInput:Disable()
+            controls.queueWindowInput:SetTextColor(0.55, 0.55, 0.55)
+            if controls.queueWindowLabel then
+                controls.queueWindowLabel:SetTextColor(0.55, 0.55, 0.55)
+            end
+        end
+    end
 end
 
 local function OpenColorPicker()
@@ -490,7 +521,7 @@ end
 local function CreateOptions()
     options = CreateFrame("Frame", "GCDTimerBar_OptionsFrame", UIParent)
     options:SetWidth(330)
-    options:SetHeight(300)
+    options:SetHeight(340)
     options:SetPoint("CENTER", UIParent, "CENTER", 0, 140)
     options:SetMovable(true)
     options:EnableMouse(true)
@@ -546,6 +577,57 @@ local function CreateOptions()
         end
     )
 
+    controls.showQueueOverlay = CreateCheckButton(
+        options,
+        "GCDTimerBar_Opt_ShowQueueOverlay",
+        "Latency/Spell Queue Overlay",
+        22,
+        -104,
+        function()
+            GCDTimerBarDB.showQueueOverlay = controls.showQueueOverlay:GetChecked() and true or false
+            UpdateQueueOverlay(state.gcdDuration or state.previewDuration)
+        end
+    )
+
+    controls.queueWindowLabel = options:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
+    controls.queueWindowLabel:SetPoint("TOPLEFT", options, "TOPLEFT", 228, -108)
+    controls.queueWindowLabel:SetText("NP ms")
+
+    controls.queueWindowInput = CreateFrame("EditBox", "GCDTimerBar_Opt_QueueWindowInput", options, "InputBoxTemplate")
+    controls.queueWindowInput:SetWidth(64)
+    controls.queueWindowInput:SetHeight(20)
+    controls.queueWindowInput:SetAutoFocus(false)
+    controls.queueWindowInput:SetMaxLetters(4)
+    controls.queueWindowInput:SetPoint("TOPLEFT", options, "TOPLEFT", 262, -104)
+    controls.queueWindowInput:SetScript("OnEnterPressed", function()
+        local value
+        if not state.hasQueueDeps then
+            this:ClearFocus()
+            return
+        end
+        value = tonumber(this:GetText() or "")
+        if not value then
+            SyncOptionsFromDB()
+            this:ClearFocus()
+            return
+        end
+        value = math.floor(value + 0.5)
+        value = Clamp(value, 50, 1200)
+        SetCVar("NP_SpellQueueWindowMs", tostring(value))
+        state.lastQueueSettingsSample = 0
+        UpdatePressWindowFromNampower(GetTime())
+        UpdateQueueOverlay(state.gcdDuration or state.previewDuration)
+        this:SetText(tostring(value))
+        this:ClearFocus()
+    end)
+    controls.queueWindowInput:SetScript("OnEscapePressed", function()
+        SyncOptionsFromDB()
+        this:ClearFocus()
+    end)
+    controls.queueWindowInput:SetScript("OnEditFocusLost", function()
+        SyncOptionsFromDB()
+    end)
+
     controls.width = CreateSlider(
         options,
         "GCDTimerBar_Opt_Width",
@@ -554,7 +636,7 @@ local function CreateOptions()
         800,
         1,
         22,
-        -122,
+        -150,
         function()
             GCDTimerBarDB.width = math.floor(controls.width:GetValue() + 0.5)
             UpdateBarVisuals()
@@ -570,7 +652,7 @@ local function CreateOptions()
         80,
         1,
         22,
-        -176,
+        -204,
         function()
             GCDTimerBarDB.height = math.floor(controls.height:GetValue() + 0.5)
             UpdateBarVisuals()
@@ -586,7 +668,7 @@ local function CreateOptions()
         1.00,
         0.05,
         22,
-        -230,
+        -258,
         function()
             local alpha = controls.opacity:GetValue()
             alpha = math.floor((alpha * 100) + 0.5) / 100
@@ -596,13 +678,13 @@ local function CreateOptions()
     )
 
     options.colorLabel = options:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-    options.colorLabel:SetPoint("TOPLEFT", options, "TOPLEFT", 22, -258)
+    options.colorLabel:SetPoint("TOPLEFT", options, "TOPLEFT", 22, -286)
     options.colorLabel:SetText("Bar Color")
 
     controls.colorBtn = CreateFrame("Button", "GCDTimerBar_Opt_ColorBtn", options)
     controls.colorBtn:SetWidth(42)
     controls.colorBtn:SetHeight(22)
-    controls.colorBtn:SetPoint("TOPLEFT", options, "TOPLEFT", 95, -263)
+    controls.colorBtn:SetPoint("TOPLEFT", options, "TOPLEFT", 95, -291)
     controls.colorBtn:SetBackdrop({
         bgFile = "Interface\\Buttons\\WHITE8x8",
         edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
