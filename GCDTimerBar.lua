@@ -455,6 +455,29 @@ local function CreateSlider(parent, name, label, minVal, maxVal, step, x, y, val
     return slider
 end
 
+local function SetEditBoxEnabled(editBox, enabled)
+    if not editBox then return end
+
+    if enabled then
+        if editBox.Enable then
+            editBox:Enable()
+        end
+        editBox:EnableMouse(true)
+        if editBox.EnableKeyboard then
+            editBox:EnableKeyboard(true)
+        end
+    else
+        if editBox.Disable then
+            editBox:Disable()
+        end
+        editBox:EnableMouse(false)
+        if editBox.EnableKeyboard then
+            editBox:EnableKeyboard(false)
+        end
+        editBox:ClearFocus()
+    end
+end
+
 local function SyncOptionsFromDB()
     local queueWindowMs
     if not options then return end
@@ -472,7 +495,7 @@ local function SyncOptionsFromDB()
             if not queueWindowMs then
                 queueWindowMs = 400
             end
-            controls.queueWindowInput:Enable()
+            SetEditBoxEnabled(controls.queueWindowInput, true)
             controls.queueWindowInput:SetText(tostring(math.floor(queueWindowMs + 0.5)))
             controls.queueWindowInput:SetTextColor(1, 1, 1)
             if controls.queueWindowLabel then
@@ -480,7 +503,7 @@ local function SyncOptionsFromDB()
             end
         else
             controls.queueWindowInput:SetText("N/A")
-            controls.queueWindowInput:Disable()
+            SetEditBoxEnabled(controls.queueWindowInput, false)
             controls.queueWindowInput:SetTextColor(0.55, 0.55, 0.55)
             if controls.queueWindowLabel then
                 controls.queueWindowLabel:SetTextColor(0.55, 0.55, 0.55)
@@ -590,15 +613,15 @@ local function CreateOptions()
     )
 
     controls.queueWindowLabel = options:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
-    controls.queueWindowLabel:SetPoint("TOPLEFT", options, "TOPLEFT", 228, -108)
-    controls.queueWindowLabel:SetText("NP ms")
+    controls.queueWindowLabel:SetPoint("TOPLEFT", options, "TOPLEFT", 206, -108)
+    controls.queueWindowLabel:SetText("NP SQW")
 
     controls.queueWindowInput = CreateFrame("EditBox", "GCDTimerBar_Opt_QueueWindowInput", options, "InputBoxTemplate")
     controls.queueWindowInput:SetWidth(64)
     controls.queueWindowInput:SetHeight(20)
     controls.queueWindowInput:SetAutoFocus(false)
     controls.queueWindowInput:SetMaxLetters(4)
-    controls.queueWindowInput:SetPoint("TOPLEFT", options, "TOPLEFT", 262, -104)
+    controls.queueWindowInput:SetPoint("TOPLEFT", options, "TOPLEFT", 248, -104)
     controls.queueWindowInput:SetScript("OnEnterPressed", function()
         local value
         if not state.hasQueueDeps then
