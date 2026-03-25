@@ -17,6 +17,13 @@ local state = {
     gcdDuration = nil,
     gcdEnd = nil,
     previewDuration = 1.50,
+    hasQueueDeps = false,
+    pressWindowSec = 0.15,
+    lastLatencySample = 0,
+    latencyAvgMs = nil,
+    latencyJitterMs = 0,
+    lastQueueSettingsSample = 0,
+    spellQueued = false,
 }
 
 local eventFrame = CreateFrame("Frame", "GCDTimerBar_EventFrame", UIParent)
@@ -34,6 +41,12 @@ local function Modulo(a, b)
     return a - (math.floor(a / b) * b)
 end
 
+local function Clamp(value, minValue, maxValue)
+    if value < minValue then return minValue end
+    if value > maxValue then return maxValue end
+    return value
+end
+
 local function IsPreviewActive()
     return options and options:IsShown()
 end
@@ -41,6 +54,114 @@ end
 local function EndActiveGCD()
     state.gcdDuration = nil
     state.gcdEnd = nil
+    state.spellQueued = false
+end
+
+local function HasNampowerQueueSupport()
+    local windowCvar
+    if not SUPERWOW_VERSION then
+        return false
+    end
+    if type(GetNampowerVersion) ~= "function" then
+        return false
+    end
+    if type(GetCVar) ~= "function" then
+        return false
+    end
+    windowCvar = GetCVar("NP_SpellQueueWindowMs")
+    if windowCvar == nil or windowCvar == "" then
+        return false
+    end
+    return true
+end
+
+local function UpdatePressWindowFromNampower(now)
+    local queueEnabled, queueWindowMs
+    if (now - state.lastQueueSettingsSample) < 0.30 then
+        return
+    end
+    state.lastQueueSettingsSample = now
+
+    queueEnabled = tostring(GetCVar("NP_QueueInstantSpells") or "1")
+    if queueEnabled == "0" then
+        state.pressWindowSec = 0
+        return
+    end
+
+    queueWindowMs = tonumber(GetCVar("NP_SpellQueueWindowMs") or "")
+    if not queueWindowMs then
+        queueWindowMs = 400
+    end
+    if queueWindowMs < 0 then
+        queueWindowMs = 0
+    end
+    -- Queue window is the true server-side early-press window when Nampower queueing is active.
+    -- Clamp to practical bounds for GCD visuals in 1.12.
+    state.pressWindowSec = Clamp(queueWindowMs / 1000, 0.02, 0.90)
+end
+
+local function UpdatePressWindowFromLatency(now)
+    local _, _, latencyMs
+    local diff, windowMs
+
+    if (now - state.lastLatencySample) < 0.50 then
+        return
+    end
+    state.lastLatencySample = now
+
+    if type(GetNetStats) ~= "function" then
+        return
+    end
+
+    _, _, latencyMs = GetNetStats()
+    latencyMs = tonumber(latencyMs)
+    if not latencyMs or latencyMs <= 0 then
+        return
+    end
+
+    if not state.latencyAvgMs then
+        state.latencyAvgMs = latencyMs
+        state.latencyJitterMs = 0
+    else
+        diff = math.abs(latencyMs - state.latencyAvgMs)
+        state.latencyAvgMs = (state.latencyAvgMs * 0.80) + (latencyMs * 0.20)
+        state.latencyJitterMs = (state.latencyJitterMs * 0.80) + (diff * 0.20)
+    end
+
+    windowMs = state.latencyAvgMs + (state.latencyJitterMs * 1.50) + 50
+    state.pressWindowSec = Clamp(windowMs / 1000, 0.08, 0.35)
+end
+
+local function UpdatePressWindow(now)
+    if state.hasQueueDeps then
+        UpdatePressWindowFromNampower(now)
+    else
+        UpdatePressWindowFromLatency(now)
+    end
+end
+
+local function UpdateQueueOverlay(referenceDuration)
+    local ratio, width
+
+    if not referenceDuration or referenceDuration <= 0 or state.pressWindowSec <= 0 then
+        bar.queueOverlay:Hide()
+        return
+    end
+
+    ratio = Clamp(state.pressWindowSec / referenceDuration, 0, 0.95)
+    width = math.floor((GCDTimerBarDB.width * ratio) + 0.5)
+    if width < 1 then
+        bar.queueOverlay:Hide()
+        return
+    end
+
+    bar.queueOverlay:SetWidth(width)
+    if state.spellQueued then
+        bar.queueOverlay:SetVertexColor(0.72, 0.35, 0.95, 0.95)
+    else
+        bar.queueOverlay:SetVertexColor(0.60, 0.25, 0.88, 0.75)
+    end
+    bar.queueOverlay:Show()
 end
 
 local function EnsureDB()
@@ -108,6 +229,7 @@ local function UpdateBarVisuals()
     bar.fill:SetVertexColor(GCDTimerBarDB.r, GCDTimerBarDB.g, GCDTimerBarDB.b, 1)
     bar:SetAlpha(GCDTimerBarDB.alpha)
     SetBarFillRatio(1)
+    UpdateQueueOverlay(state.gcdDuration or state.previewDuration)
 end
 
 local function SaveBarPosition()
@@ -145,6 +267,7 @@ local function UpdateBarVisibility()
     if GCDTimerBarDB.hideOutOfCombat and not state.inCombat then
         bar:Hide()
         bar.spark:Hide()
+        bar.queueOverlay:Hide()
         return
     end
 
@@ -153,6 +276,7 @@ local function UpdateBarVisibility()
     else
         bar:Hide()
         bar.spark:Hide()
+        bar.queueOverlay:Hide()
     end
 end
 
@@ -163,6 +287,7 @@ local function BeginGCD(startTime, duration)
     state.gcdDuration = duration
     state.gcdEnd = startTime + duration
     SetBarFillRatio(1)
+    UpdateQueueOverlay(duration)
     UpdateBarVisibility()
 end
 
@@ -275,6 +400,15 @@ local function CreateBar()
     bar.fill:SetPoint("BOTTOMLEFT", bar, "BOTTOMLEFT", 0, 0)
     bar.fill:SetWidth(defaults.width)
 
+    bar.queueOverlay = bar:CreateTexture(nil, "OVERLAY")
+    bar.queueOverlay:SetTexture("Interface\\TargetingFrame\\UI-StatusBar")
+    -- Left-edge zone: bar drains right->left, so this marks the "safe to queue now" segment.
+    bar.queueOverlay:SetPoint("TOPLEFT", bar, "TOPLEFT", 0, 0)
+    bar.queueOverlay:SetPoint("BOTTOMLEFT", bar, "BOTTOMLEFT", 0, 0)
+    bar.queueOverlay:SetWidth(0)
+    bar.queueOverlay:SetVertexColor(0.60, 0.25, 0.88, 0.75)
+    bar.queueOverlay:Hide()
+
     bar.border = bar:CreateTexture(nil, "BORDER")
     bar.border:SetTexture("Interface\\Tooltips\\UI-StatusBar-Border")
     bar.border:SetPoint("TOPLEFT", bar, "TOPLEFT", -2, 2)
@@ -376,6 +510,7 @@ local function CreateOptions()
     options:SetScript("OnHide", function()
         -- Covers closing via X / ESC / external hide calls.
         SetBarFillRatio(0, false)
+        UpdateQueueOverlay(nil)
         UpdateBarVisibility()
     end)
 
@@ -505,11 +640,15 @@ end
 bar:SetScript("OnUpdate", function()
     local now, remaining, ratio, phase
 
+    now = GetTime()
+    UpdatePressWindow(now)
+
     if IsPreviewActive() then
-        phase = Modulo(GetTime(), state.previewDuration)
+        phase = Modulo(now, state.previewDuration)
         remaining = state.previewDuration - phase
         ratio = remaining / state.previewDuration
         SetBarFillRatio(ratio, true)
+        UpdateQueueOverlay(state.previewDuration)
         if not bar:IsShown() then
             bar:Show()
         end
@@ -517,16 +656,17 @@ bar:SetScript("OnUpdate", function()
     end
 
     if not state.gcdEnd then
+        UpdateQueueOverlay(nil)
         if bar:IsShown() then
             UpdateBarVisibility()
         end
         return
     end
 
-    now = GetTime()
     if now >= state.gcdEnd then
         EndActiveGCD()
         SetBarFillRatio(0)
+        UpdateQueueOverlay(nil)
         UpdateBarVisibility()
         return
     end
@@ -534,12 +674,14 @@ bar:SetScript("OnUpdate", function()
     if GCDTimerBarDB.hideOutOfCombat and not state.inCombat then
         bar:Hide()
         bar.spark:Hide()
+        bar.queueOverlay:Hide()
         return
     end
 
     remaining = state.gcdEnd - now
     ratio = remaining / state.gcdDuration
     SetBarFillRatio(ratio)
+    UpdateQueueOverlay(state.gcdDuration)
     if not bar:IsShown() then
         bar:Show()
     end
@@ -548,9 +690,14 @@ end)
 eventFrame:SetScript("OnEvent", function()
     if event == "PLAYER_LOGIN" then
         EnsureDB()
+        state.hasQueueDeps = HasNampowerQueueSupport()
         CreateBar()
         CreateOptions()
         state.inCombat = UnitAffectingCombat("player") and true or false
+        state.spellQueued = false
+        if state.hasQueueDeps then
+            eventFrame:RegisterEvent("SPELL_QUEUE_EVENT")
+        end
         ApplyAllSettings()
     elseif event == "PLAYER_ENTERING_WORLD" then
         state.inCombat = UnitAffectingCombat("player") and true or false
@@ -564,6 +711,13 @@ eventFrame:SetScript("OnEvent", function()
     elseif event == "SPELL_UPDATE_COOLDOWN" or event == "ACTIONBAR_UPDATE_COOLDOWN" then
         if GCDTimerBarDB then
             RefreshGCDFromCooldowns()
+        end
+    elseif event == "SPELL_QUEUE_EVENT" then
+        local eventCode = arg1
+        if eventCode == 0 or eventCode == 2 or eventCode == 4 then
+            state.spellQueued = true
+        elseif eventCode == 1 or eventCode == 3 or eventCode == 5 then
+            state.spellQueued = false
         end
     end
 end)
