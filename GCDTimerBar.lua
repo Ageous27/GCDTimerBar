@@ -3,18 +3,18 @@
 -- ============================================================================
 local defaults = {
     -- Visual + behavior defaults persisted in SavedVariables.
-    locked = false,
-    hideOutOfCombat = false,
+    locked = true,
+    hideOutOfCombat = true,
     showQueueOverlay = true,
-    width = 220,
-    height = 18,
-    alpha = 1.0,
-    r = 0.15,
-    g = 0.75,
-    b = 0.20,
-    x = 0,
-    y = 0,
-    moved = false,
+    width = 129,
+    height = 11,
+    alpha = 0.55,
+    r = 0.7490196078431373,
+    g = 0.3450980392156863,
+    b = 0.2313725490196079,
+    x = 1,
+    y = -88,
+    moved = true,
 }
 
 local state = {
